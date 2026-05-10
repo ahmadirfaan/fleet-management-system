@@ -1,11 +1,9 @@
 //! Persistence adapter — wraps all SQLx queries behind a typed repository.
-//!
-//! Upper layers (use_cases) depend on this struct directly. For testing,
-//! swap the `PgPool` with `sqlx::PgPool` backed by a test transaction.
 
 use chrono::DateTime;
 use serde_json::json;
 use sqlx::PgPool;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::domain::{
@@ -26,15 +24,15 @@ impl FleetRepository {
 
     // ── Write operations ──────────────────────────────────────────────────────
 
-    /// Persist one telemetry reading. Converts call_sign → UUID internally.
     pub async fn insert_telemetry(&self, tel: &TelemetryReading) -> Result<(), sqlx::Error> {
         let fleet_uuid = self.resolve_fleet_uuid(&tel.fleet_id).await?;
-        let ts = DateTime::from_timestamp_millis(tel.timestamp_ms)
-            .ok_or_else(|| sqlx::Error::Decode(
+        let ts = DateTime::from_timestamp_millis(tel.timestamp_ms).ok_or_else(|| {
+            sqlx::Error::Decode(
                 anyhow::anyhow!(DomainError::InvalidTimestamp(tel.timestamp_ms)).into(),
-            ))?;
+            )
+        })?;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO telemetry_logs
                 (fleet_id, timestamp, geom, elevation_meters, speed_kmh, engine_rpm,
@@ -43,25 +41,24 @@ impl FleetRepository {
                 ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326),
                  $5, $6, $7, $8, $9, $10, $11)
             "#,
-            fleet_uuid,
-            ts,
-            tel.longitude,
-            tel.latitude,
-            tel.elevation_meters as f64,
-            tel.speed_kmh as f64,
-            tel.engine_rpm,
-            tel.fuel_level_percent as f64,
-            tel.payload_weight_tons as f64,
-            tel.heading_degrees,
-            tel.operational_state,
         )
+        .bind(fleet_uuid)
+        .bind(ts)
+        .bind(tel.longitude)
+        .bind(tel.latitude)
+        .bind(tel.elevation_meters as f64)
+        .bind(tel.speed_kmh as f64)
+        .bind(tel.engine_rpm)
+        .bind(tel.fuel_level_percent as f64)
+        .bind(tel.payload_weight_tons as f64)
+        .bind(tel.heading_degrees)
+        .bind(&tel.operational_state)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    /// Persist a health alert triggered by the processor.
     pub async fn insert_alert(
         &self,
         fleet_id_str: &str,
@@ -70,10 +67,11 @@ impl FleetRepository {
         tel: &TelemetryReading,
     ) -> Result<(), sqlx::Error> {
         let fleet_uuid = self.resolve_fleet_uuid(fleet_id_str).await?;
-        let ts = DateTime::from_timestamp_millis(tel.timestamp_ms)
-            .ok_or_else(|| sqlx::Error::Decode(
+        let ts = DateTime::from_timestamp_millis(tel.timestamp_ms).ok_or_else(|| {
+            sqlx::Error::Decode(
                 anyhow::anyhow!(DomainError::InvalidTimestamp(tel.timestamp_ms)).into(),
-            ))?;
+            )
+        })?;
 
         let snapshot = json!({
             "speed_kmh": tel.speed_kmh,
@@ -83,31 +81,30 @@ impl FleetRepository {
             "fuel_level_percent": tel.fuel_level_percent,
         });
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO health_alerts
                 (fleet_id, alert_type, severity, start_timestamp, telemetry_snapshot)
             VALUES ($1, $2, $3, $4, $5)
             "#,
-            fleet_uuid,
-            alert_type.as_str(),
-            severity.as_str(),
-            ts,
-            snapshot,
         )
+        .bind(fleet_uuid)
+        .bind(alert_type.as_str())
+        .bind(severity.as_str())
+        .bind(ts)
+        .bind(snapshot)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    /// Mark an alert as acknowledged. Returns `true` if a row was updated.
     pub async fn acknowledge_alert(&self, alert_id: Uuid) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query!(
+        let result = sqlx::query(
             "UPDATE health_alerts SET is_acknowledged = TRUE \
              WHERE id = $1 AND is_acknowledged = FALSE",
-            alert_id
         )
+        .bind(alert_id)
         .execute(&self.pool)
         .await?;
 
@@ -117,25 +114,26 @@ impl FleetRepository {
     // ── Read operations ───────────────────────────────────────────────────────
 
     pub async fn get_fleets(&self) -> Result<Vec<Fleet>, sqlx::Error> {
-        let rows =
-            sqlx::query!("SELECT id, call_sign, fleet_type, make_model, status FROM fleets")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(
+            "SELECT id, call_sign, fleet_type, make_model, status FROM fleets",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(rows
             .into_iter()
             .map(|r| Fleet {
-                id: r.id,
-                call_sign: r.call_sign,
-                fleet_type: parse_fleet_type(&r.fleet_type),
-                make_model: r.make_model,
-                status: parse_fleet_status(&r.status),
+                id: r.get("id"),
+                call_sign: r.get("call_sign"),
+                fleet_type: parse_fleet_type(r.get("fleet_type")),
+                make_model: r.get("make_model"),
+                status: parse_fleet_status(r.get("status")),
             })
             .collect())
     }
 
     pub async fn get_alerts(&self) -> Result<Vec<HealthAlert>, sqlx::Error> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT ha.id, f.call_sign, ha.alert_type, ha.severity,
                    ha.start_timestamp, ha.is_acknowledged, ha.telemetry_snapshot
@@ -143,7 +141,7 @@ impl FleetRepository {
             JOIN fleets f ON f.id = ha.fleet_id
             ORDER BY ha.start_timestamp DESC
             LIMIT 100
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -151,13 +149,13 @@ impl FleetRepository {
         Ok(rows
             .into_iter()
             .map(|r| HealthAlert {
-                id: r.id,
-                call_sign: r.call_sign,
-                alert_type: parse_alert_type(&r.alert_type),
-                severity: parse_alert_severity(&r.severity),
-                start_timestamp: r.start_timestamp,
-                is_acknowledged: r.is_acknowledged,
-                telemetry_snapshot: r.telemetry_snapshot,
+                id: r.get("id"),
+                call_sign: r.get("call_sign"),
+                alert_type: parse_alert_type(r.get("alert_type")),
+                severity: parse_alert_severity(r.get("severity")),
+                start_timestamp: r.get("start_timestamp"),
+                is_acknowledged: r.get("is_acknowledged"),
+                telemetry_snapshot: r.get("telemetry_snapshot"),
             })
             .collect())
     }
@@ -169,7 +167,7 @@ impl FleetRepository {
     ) -> Result<Vec<HistoryPoint>, sqlx::Error> {
         let fleet_uuid = self.resolve_fleet_uuid(fleet_id_str).await?;
 
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT
                 timestamp,
@@ -184,22 +182,22 @@ impl FleetRepository {
             ORDER BY timestamp DESC
             LIMIT $2
             "#,
-            fleet_uuid,
-            limit,
         )
+        .bind(fleet_uuid)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
             .into_iter()
             .map(|r| HistoryPoint {
-                timestamp: r.timestamp,
-                latitude: r.latitude.unwrap_or(0.0),
-                longitude: r.longitude.unwrap_or(0.0),
-                speed_kmh: r.speed_kmh,
-                engine_rpm: r.engine_rpm,
-                fuel_level_percent: r.fuel_level_percent,
-                operational_state: r.operational_state,
+                timestamp: r.get("timestamp"),
+                latitude: r.get::<Option<f64>, _>("latitude").unwrap_or(0.0),
+                longitude: r.get::<Option<f64>, _>("longitude").unwrap_or(0.0),
+                speed_kmh: r.get("speed_kmh"),
+                engine_rpm: r.get("engine_rpm"),
+                fuel_level_percent: r.get("fuel_level_percent"),
+                operational_state: r.get("operational_state"),
             })
             .collect())
     }
@@ -207,15 +205,16 @@ impl FleetRepository {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     async fn resolve_fleet_uuid(&self, call_sign: &str) -> Result<Uuid, sqlx::Error> {
-        let row = sqlx::query!("SELECT id FROM fleets WHERE call_sign = $1", call_sign)
+        let row = sqlx::query("SELECT id FROM fleets WHERE call_sign = $1")
+            .bind(call_sign)
             .fetch_optional(&self.pool)
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
-        Ok(row.id)
+        Ok(row.get("id"))
     }
 }
 
-// ── String → enum parsers (from DB values) ───────────────────────────────────
+// ── String → enum parsers ─────────────────────────────────────────────────────
 
 fn parse_fleet_type(s: &str) -> FleetType {
     match s {

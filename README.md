@@ -1,4 +1,4 @@
-# SYNPS MINI FLEET — Real-Time Mine Fleet Management System
+# FLEET MANAGEMENT SYSTEM — Real-Time Mine Fleet Management System
 
 Single-command bring-up. Production-grade Rust backend. Live 2D map dashboard.
 

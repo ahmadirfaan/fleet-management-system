@@ -568,4 +568,4 @@ class TestE2E:
         assert r.status_code == 200
         assert "text/html" in r.headers.get("Content-Type", "")
         # React app mounts on #root
-        assert 'id="root"' in r.text or "SYNPS MINI FLEET" in r.text
+        assert 'id="root"' in r.text or "FLEET MANAGEMENT SYSTEM" in r.text

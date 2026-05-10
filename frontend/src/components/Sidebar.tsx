@@ -16,7 +16,7 @@ export default function Sidebar() {
       {/* Header */}
       <div className="px-4 py-3 border-b border-fleet-border">
         <h1 className="text-sm font-bold tracking-widest uppercase text-fleet-muted">
-          SYNPS MINI FLEET
+          FLEET MANAGEMENT SYSTEM
         </h1>
         <p className="text-xs text-fleet-muted mt-0.5">Command Center</p>
       </div>
