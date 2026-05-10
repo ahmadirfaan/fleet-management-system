@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use crate::domain::{
-    errors::{AppError, DomainError},
+    errors::{AppError},
     models::{AlertSeverity, AlertType, SseEvent, TelemetryReading},
 };
 use crate::infrastructure::persistence::FleetRepository;

@@ -46,7 +46,6 @@ export const useFleetStore = create<FleetStore>((set, get) => ({
   selectedTruckId: null,
 
   applyTelemetry: (event) => {
-    // GPS glitch → do NOT update position (is_anomaly + anomaly_type == GPS_GLITCH)
     const isGpsGlitch = event.is_anomaly && event.anomaly_type === "GPS_GLITCH";
 
     set((state) => {

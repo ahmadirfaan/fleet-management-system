@@ -12,11 +12,13 @@ use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use config::AppConfig;
 
 mod domain;
 mod infrastructure;
 mod interface;
 mod use_cases;
+mod config;
 
 // Compiled protobuf types — only infrastructure/messaging uses these.
 mod proto {
@@ -25,25 +27,17 @@ mod proto {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+
+    let config_app = AppConfig::from_env();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     // ── Configuration from environment ────────────────────────────────────────
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://fleet:fleet_secret@localhost:5432/fleetdb".into());
-    let mqtt_host = std::env::var("MQTT_HOST").unwrap_or_else(|_| "localhost".into());
-    let mqtt_port: u16 = std::env::var("MQTT_PORT")
-        .unwrap_or_else(|_| "1883".into())
-        .parse()?;
-    let server_port: u16 = std::env::var("SERVER_PORT")
-        .unwrap_or_else(|_| "8080".into())
-        .parse()?;
-
     // ── Layer 3: Infrastructure — database pool ───────────────────────────────
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&database_url)
+        .connect(&config_app.database_url)
         .await?;
     info!("Connected to PostgreSQL");
 
@@ -73,8 +67,8 @@ async fn main() -> Result<()> {
 
     // ── Layer 3: Infrastructure — MQTT listener ───────────────────────────────
     tokio::spawn(infrastructure::messaging::run_mqtt_listener(
-        mqtt_host,
-        mqtt_port,
+        config_app.mqtt_host,
+        config_app.mqtt_port,
         proc_tx,
     ));
 
@@ -91,6 +85,7 @@ async fn main() -> Result<()> {
 
     let app = interface::http::build_router(http_state).layer(cors);
 
+    let server_port = config_app.server_port;
     let addr = format!("0.0.0.0:{server_port}");
     info!("Listening on {addr}");
     let listener = TcpListener::bind(&addr).await?;
