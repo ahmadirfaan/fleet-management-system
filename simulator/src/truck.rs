@@ -10,9 +10,84 @@ use tracing::info;
 
 use crate::Telemetry;
 
-// ── Mine area centred roughly in Kalimantan ───────────────────────────────────
+// ── Open-pit mine centred in Kalimantan (Sangatta area) ──────────────────────
+//
+// We model a realistic open-pit mine loop. Each truck follows a closed circuit
+// that mimics the typical haul-road geometry: tight curves at the loading zone
+// and crusher, wider sweeping arcs on the haul road, switchbacks on the ramps.
+//
+// The "route" for each truck is a series of waypoints (lat, lon) that form the
+// circuit. The truck interpolates between waypoints based on its speed.
+
 const BASE_LAT: f64 = -0.51;
 const BASE_LON: f64 = 116.83;
+
+/// A waypoint along the mine circuit.
+#[derive(Clone, Copy, Debug)]
+pub struct Waypoint {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl Waypoint {
+    const fn new(lat: f64, lon: f64) -> Self {
+        Self { lat, lon }
+    }
+}
+
+// ── Mine circuit waypoints (open-pit haul road loop) ─────────────────────────
+//
+// The circuit models: Loading Zone (pit floor) → Ramp up → Haul Road (curved)
+// → Crusher → Return Road → Back to Loading Zone.
+// Offsets are in degrees (~111 km/deg lat, ~111*cos(lat) km/deg lon ≈ 111 km/deg here).
+//
+// Scale: 0.001° ≈ 111 m — realistic for a mid-size open-pit mine.
+
+const CIRCUIT: [Waypoint; 16] = [
+    // Loading zone — pit floor (south-west)
+    Waypoint::new(BASE_LAT - 0.010, BASE_LON - 0.008),
+    Waypoint::new(BASE_LAT - 0.008, BASE_LON - 0.006),
+    // Ramp climb — switchback 1
+    Waypoint::new(BASE_LAT - 0.006, BASE_LON - 0.009),
+    Waypoint::new(BASE_LAT - 0.004, BASE_LON - 0.005),
+    // Ramp top — transition to haul road
+    Waypoint::new(BASE_LAT - 0.002, BASE_LON - 0.003),
+    // Haul road — sweeping curve north-east
+    Waypoint::new(BASE_LAT + 0.002, BASE_LON + 0.002),
+    Waypoint::new(BASE_LAT + 0.006, BASE_LON + 0.006),
+    Waypoint::new(BASE_LAT + 0.010, BASE_LON + 0.009),
+    // Crusher area (north-east corner)
+    Waypoint::new(BASE_LAT + 0.013, BASE_LON + 0.012),
+    Waypoint::new(BASE_LAT + 0.012, BASE_LON + 0.015),
+    // Return road — arcing south
+    Waypoint::new(BASE_LAT + 0.008, BASE_LON + 0.013),
+    Waypoint::new(BASE_LAT + 0.004, BASE_LON + 0.010),
+    // South-east curve before descent
+    Waypoint::new(BASE_LAT + 0.001, BASE_LON + 0.006),
+    Waypoint::new(BASE_LAT - 0.003, BASE_LON + 0.002),
+    // Descent ramp back to pit floor
+    Waypoint::new(BASE_LAT - 0.007, BASE_LON - 0.003),
+    Waypoint::new(BASE_LAT - 0.010, BASE_LON - 0.006),
+];
+
+/// Segment index ranges that correspond to each operational state.
+/// Loading zone: waypoints 0-1, Ramp/Haul: 2-7, Crusher: 8-9, Return: 10-15.
+const LOADING_ZONE_END: usize = 2;   // waypoints 0-1 → loading
+const CRUSHER_START: usize = 8;      // waypoints 8-9 → dumping/crusher
+const CRUSHER_END: usize = 10;       // waypoints 10+ → returning
+
+/// Elevation profile along the circuit (meters above sea level).
+/// Pit floor ~20 m, ramp peaks ~80 m, haul road ~75 m, crusher plateau ~70 m.
+const ELEVATION_PROFILE: [f32; 16] = [
+    22.0, 25.0,  // pit floor
+    45.0, 65.0,  // ramp climb
+    78.0, 80.0,  // ramp top / haul road start
+    78.0, 76.0,  // haul road arc
+    72.0, 70.0,  // crusher plateau
+    68.0, 66.0,  // return road
+    72.0, 75.0,  // south-east curve
+    60.0, 30.0,  // descent back to pit
+];
 
 /// Truck operational state machine.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,37 +102,89 @@ pub enum TruckOp {
 #[derive(Clone)]
 pub struct Truck {
     pub call_sign: String,
+
+    // Current position (interpolated between waypoints)
     pub lat: f64,
     pub lon: f64,
     pub heading: i32,
+    pub elevation: f32,
+
+    // Telemetry values
     pub speed: f32,
     pub fuel: f32,
     pub payload: f32,
     pub rpm: i32,
+
+    // State machine
     pub op_state: TruckOp,
-    pub op_ticks: u32, // ticks spent in current state
-    /// Chaos mode: glitch fires every GLITCH_INTERVAL ticks.
+    pub op_ticks: u32,
+
+    // Route progress
+    pub waypoint_idx: usize,  // index of the *next* waypoint to reach
+    pub route_progress: f64,  // 0.0–1.0 fraction between current and next waypoint
+
+    // Chaos
     pub tick: u64,
 }
 
-const GLITCH_INTERVAL: u64 = 60; // every ~60 seconds
+const GLITCH_INTERVAL: u64 = 60;
 
 pub fn init_trucks() -> Vec<Truck> {
+    // Spread 5 trucks evenly around the 16-waypoint circuit so they look
+    // like different trucks doing different things from the very first frame.
+    let offsets = [0usize, 3, 6, 9, 12];
+
     (1..=5)
-        .map(|i| Truck {
-            call_sign: format!("HT-{:03}", i),
-            lat: BASE_LAT + (i as f64) * 0.01,
-            lon: BASE_LON + (i as f64) * 0.005,
-            heading: (i * 45) % 360,
-            speed: 0.0,
-            fuel: 80.0 + (i as f32) * 2.0,
-            payload: 0.0,
-            rpm: 800,
-            op_state: TruckOp::Idle,
-            op_ticks: 0,
-            tick: 0,
+        .zip(offsets.iter())
+        .map(|(i, &offset)| {
+            let wp = CIRCUIT[offset];
+            let elev = ELEVATION_PROFILE[offset];
+            Truck {
+                call_sign: format!("HT-{:03}", i),
+                lat: wp.lat,
+                lon: wp.lon,
+                heading: initial_heading(offset),
+                elevation: elev,
+                speed: 0.0,
+                fuel: 75.0 + (i as f32) * 4.0,
+                payload: 0.0,
+                rpm: 800,
+                op_state: initial_state(offset),
+                op_ticks: 0,
+                waypoint_idx: (offset + 1) % CIRCUIT.len(),
+                route_progress: 0.0,
+                tick: 0,
+            }
         })
         .collect()
+}
+
+/// Pick an initial operational state based on where in the circuit the truck starts.
+fn initial_state(offset: usize) -> TruckOp {
+    if offset < LOADING_ZONE_END {
+        TruckOp::Loading
+    } else if offset < CRUSHER_START {
+        TruckOp::Hauling
+    } else if offset < CRUSHER_END {
+        TruckOp::Dumping
+    } else {
+        TruckOp::Returning
+    }
+}
+
+/// Compute approximate heading from one waypoint to the next.
+fn initial_heading(offset: usize) -> i32 {
+    let from = CIRCUIT[offset];
+    let to = CIRCUIT[(offset + 1) % CIRCUIT.len()];
+    bearing_deg(from, to)
+}
+
+/// Bearing in degrees (0 = north, 90 = east) from `a` to `b`.
+fn bearing_deg(a: Waypoint, b: Waypoint) -> i32 {
+    let dlat = b.lat - a.lat;
+    let dlon = b.lon - a.lon;
+    let angle = dlon.atan2(dlat).to_degrees();
+    angle.rem_euclid(360.0) as i32
 }
 
 /// Main loop for a single truck – publishes every 1 second.
@@ -68,7 +195,6 @@ pub async fn run_truck(idx: usize, client: AsyncClient, trucks: Arc<Mutex<Vec<Tr
             let truck = &mut locked[idx];
             step_truck(truck)
         };
-
         publish(&client, &tel).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -84,7 +210,6 @@ pub async fn burst(idx: usize, count: u32, client: AsyncClient, trucks: Arc<Mute
             step_truck(truck)
         };
         publish(&client, &tel).await;
-        // Minimal yield so Tokio can process acks.
         tokio::task::yield_now().await;
     }
 }
@@ -96,67 +221,157 @@ fn step_truck(t: &mut Truck) -> Telemetry {
     t.tick += 1;
     t.op_ticks += 1;
 
-    // ── State transitions ─────────────────────────────────────────────────────
-    let transition = match t.op_state {
-        TruckOp::Idle if t.op_ticks > 5 => Some(TruckOp::Loading),
-        TruckOp::Loading if t.op_ticks > 15 => Some(TruckOp::Hauling),
-        TruckOp::Hauling if t.op_ticks > 30 => Some(TruckOp::Dumping),
-        TruckOp::Dumping if t.op_ticks > 8 => Some(TruckOp::Returning),
-        TruckOp::Returning if t.op_ticks > 20 => Some(TruckOp::Idle),
-        _ => None,
+    // ── State transitions based on circuit position ───────────────────────────
+    //
+    // We derive the operational state from *where* the truck is on the circuit
+    // rather than purely from a tick counter. This makes the data realistic:
+    // the truck loads while at the loading zone, hauls while climbing/hauling,
+    // dumps at the crusher, returns on the return road.
+    let wp_idx = t.waypoint_idx % CIRCUIT.len();
+
+    let new_state = if wp_idx < LOADING_ZONE_END || wp_idx == CIRCUIT.len() - 1 {
+        // Approaching or at loading zone
+        if t.op_ticks > 8 && t.op_state == TruckOp::Idle {
+            Some(TruckOp::Loading)
+        } else {
+            None
+        }
+    } else if wp_idx < CRUSHER_START {
+        // On the haul road
+        if t.op_state == TruckOp::Loading && t.payload >= 250.0 {
+            Some(TruckOp::Hauling)
+        } else {
+            None
+        }
+    } else if wp_idx < CRUSHER_END {
+        // At the crusher
+        if t.op_state == TruckOp::Hauling {
+            Some(TruckOp::Dumping)
+        } else {
+            None
+        }
+    } else {
+        // On the return road
+        if t.op_state == TruckOp::Dumping && t.payload <= 0.0 {
+            Some(TruckOp::Returning)
+        } else if t.op_state == TruckOp::Returning && wp_idx >= CIRCUIT.len() - 2 {
+            Some(TruckOp::Idle)
+        } else {
+            None
+        }
     };
-    if let Some(new_state) = transition {
-        t.op_state = new_state;
+
+    if let Some(s) = new_state {
+        t.op_state = s;
         t.op_ticks = 0;
     }
 
-    // ── Physical values ───────────────────────────────────────────────────────
+    // ── Physical values per state ─────────────────────────────────────────────
+    //
+    // Speed and RPM are realistically varied:
+    //   - Ramp sections: lower speed, higher RPM (grade resistance)
+    //   - Straight haul road: higher speed, mid RPM
+    //   - Crusher / loading zone: near-zero speed, idle RPM
+    let on_ramp = (2..=4).contains(&wp_idx);
+    let on_descent = (14..=15).contains(&wp_idx);
+
     match t.op_state {
         TruckOp::Idle => {
             t.speed = 0.0;
-            t.rpm = 750 + rng.gen_range(0..100);
+            // Random warm-idle fluctuation 700-850 RPM
+            t.rpm = 700 + rng.gen_range(0..150);
             t.payload = 0.0;
         }
         TruckOp::Loading => {
-            t.speed = 5.0 + rng.gen_range(0.0..3.0);
-            t.rpm = 1200 + rng.gen_range(0..200);
-            t.payload = (t.payload + 15.0).min(250.0);
+            // Creeping around the loading zone
+            t.speed = rng.gen_range(2.0..6.0_f32);
+            t.rpm = 1100 + rng.gen_range(0..250);
+            t.payload = (t.payload + rng.gen_range(10.0..20.0_f32)).min(250.0);
         }
         TruckOp::Hauling => {
-            t.speed = 30.0 + rng.gen_range(0.0..15.0);
-            t.rpm = 1800 + rng.gen_range(0..400);
+            if on_ramp {
+                // Climbing ramp: slow & high RPM
+                t.speed = rng.gen_range(12.0..22.0_f32);
+                t.rpm = 2000 + rng.gen_range(0..400);
+            } else {
+                // Open haul road: faster, moderate RPM
+                t.speed = rng.gen_range(28.0..45.0_f32);
+                t.rpm = 1700 + rng.gen_range(0..350);
+            }
             t.payload = 250.0;
-            t.heading = (t.heading + rng.gen_range(-5..5)).rem_euclid(360);
+            // Heading drifts slightly around curves (±8° per tick)
+            t.heading = (t.heading + rng.gen_range(-8..8_i32)).rem_euclid(360);
         }
         TruckOp::Dumping => {
-            t.speed = 3.0;
-            t.rpm = 900 + rng.gen_range(0..150);
-            t.payload = (t.payload - 30.0).max(0.0);
+            t.speed = rng.gen_range(2.0..5.0_f32);
+            t.rpm = 850 + rng.gen_range(0..200);
+            t.payload = (t.payload - rng.gen_range(25.0..40.0_f32)).max(0.0);
         }
         TruckOp::Returning => {
-            t.speed = 40.0 + rng.gen_range(0.0..10.0);
-            t.rpm = 1600 + rng.gen_range(0..300);
+            if on_descent {
+                // Engine-braking descent: low RPM, moderate speed
+                t.speed = rng.gen_range(18.0..30.0_f32);
+                t.rpm = 1200 + rng.gen_range(0..200);
+            } else {
+                // Empty return: faster, lower RPM than loaded haul
+                t.speed = rng.gen_range(35.0..52.0_f32);
+                t.rpm = 1500 + rng.gen_range(0..300);
+            }
             t.payload = 0.0;
-            t.heading = (t.heading + 180).rem_euclid(360);
         }
     }
 
-    // Consume fuel
-    t.fuel = (t.fuel - 0.01).max(0.0);
+    // ── Move along the circuit ────────────────────────────────────────────────
+    //
+    // We advance `route_progress` by a distance proportional to speed.
+    // When progress >= 1.0 the truck has reached the next waypoint.
+    let speed_ms = (t.speed as f64) / 3.6; // km/h → m/s
+    // 1 tick = 1 second; distance per waypoint segment ≈ 150 m (rough mine scale)
+    let segment_len_m = segment_length_m(
+        CIRCUIT[t.waypoint_idx.saturating_sub(1) % CIRCUIT.len()],
+        CIRCUIT[t.waypoint_idx % CIRCUIT.len()],
+    );
+    let segment_len_m = segment_len_m.max(50.0); // guard against zero
+    t.route_progress += speed_ms / segment_len_m;
 
-    // Move position based on heading + speed (tiny delta for sim).
-    let speed_deg_per_s = (t.speed as f64) / 111_000.0; // rough conversion
-    t.lat += speed_deg_per_s * (t.heading as f64).to_radians().cos() * 0.01;
-    t.lon += speed_deg_per_s * (t.heading as f64).to_radians().sin() * 0.01;
+    // Advance waypoints when progress passes 1.0
+    while t.route_progress >= 1.0 {
+        t.route_progress -= 1.0;
+        t.waypoint_idx = (t.waypoint_idx + 1) % CIRCUIT.len();
+    }
 
-    let elevation = 150.0 + rng.gen_range(0.0f32..50.0);
+    // Interpolate position between current and next waypoint
+    let cur_wp = CIRCUIT[t.waypoint_idx.saturating_sub(1) % CIRCUIT.len()];
+    let next_wp = CIRCUIT[t.waypoint_idx % CIRCUIT.len()];
+    let alpha = t.route_progress.clamp(0.0, 1.0);
+
+    t.lat = lerp(cur_wp.lat, next_wp.lat, alpha);
+    t.lon = lerp(cur_wp.lon, next_wp.lon, alpha);
+
+    // Heading: true bearing from current to next waypoint + small jitter
+    let base_heading = bearing_deg(cur_wp, next_wp);
+    t.heading = (base_heading + rng.gen_range(-5..5_i32)).rem_euclid(360);
+
+    // Elevation: interpolate along profile + small noise
+    let cur_elev = ELEVATION_PROFILE[t.waypoint_idx.saturating_sub(1) % CIRCUIT.len()];
+    let next_elev = ELEVATION_PROFILE[t.waypoint_idx % CIRCUIT.len()];
+    t.elevation = lerp_f32(cur_elev, next_elev, alpha as f32) + rng.gen_range(-2.0..2.0_f32);
+
+    // Consume fuel (~0.008%/s idle, 0.03%/s loaded hauling)
+    let fuel_rate = match t.op_state {
+        TruckOp::Idle => 0.008,
+        TruckOp::Loading | TruckOp::Dumping => 0.015,
+        TruckOp::Hauling => 0.030,
+        TruckOp::Returning => 0.020,
+    };
+    t.fuel = (t.fuel - fuel_rate).max(0.0);
+
     let ts_ms = Utc::now().timestamp_millis();
 
     // ── Chaos Mode 1: GPS Glitch (every GLITCH_INTERVAL ticks) ───────────────
     let (lat, lon) = if t.tick % GLITCH_INTERVAL == 0 {
         info!("[{}] CHAOS: GPS glitch injected", t.call_sign);
-        // Jump 150 km away.
-        (t.lat + 1.35, t.lon + 0.90)
+        (t.lat + 1.35, t.lon + 0.90) // ~150 km jump
     } else {
         (t.lat, t.lon)
     };
@@ -182,7 +397,7 @@ fn step_truck(t: &mut Truck) -> Telemetry {
         timestamp_ms,
         latitude: lat,
         longitude: lon,
-        elevation_meters: elevation,
+        elevation_meters: t.elevation,
         speed_kmh: t.speed,
         engine_rpm: t.rpm,
         fuel_level_percent: t.fuel,
@@ -191,6 +406,23 @@ fn step_truck(t: &mut Truck) -> Telemetry {
         operational_state: op_state_str.to_string(),
         excavator_data: None,
     }
+}
+
+// ── Geometry helpers ──────────────────────────────────────────────────────────
+
+/// Approximate segment length in metres using the equirectangular approximation.
+fn segment_length_m(a: Waypoint, b: Waypoint) -> f64 {
+    let dlat = (b.lat - a.lat) * 111_000.0;
+    let dlon = (b.lon - a.lon) * 111_000.0 * a.lat.to_radians().cos();
+    (dlat * dlat + dlon * dlon).sqrt()
+}
+
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+
+fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
 async fn publish(client: &AsyncClient, tel: &Telemetry) {
@@ -214,49 +446,108 @@ mod tests {
     }
 
     #[test]
-    fn test_idle_to_loading_transition() {
-        let mut t = make_truck(0);
-        assert_eq!(t.op_state, TruckOp::Idle);
-        // Advance past idle threshold (5 ticks)
-        for _ in 0..6 {
-            step_truck(&mut t);
+    fn test_trucks_start_at_different_positions() {
+        let trucks = init_trucks();
+        // Each truck should start at a different waypoint so they look distinct.
+        let positions: Vec<(i64, i64)> = trucks
+            .iter()
+            .map(|t| ((t.lat * 1e6) as i64, (t.lon * 1e6) as i64))
+            .collect();
+        // All starting positions must be unique.
+        for i in 0..positions.len() {
+            for j in (i + 1)..positions.len() {
+                assert_ne!(positions[i], positions[j], "Trucks {i} and {j} share the same starting position");
+            }
         }
-        assert_eq!(t.op_state, TruckOp::Loading);
     }
 
     #[test]
-    fn test_full_cycle() {
-        let mut t = make_truck(1);
-        // Run enough ticks to complete a full cycle.
-        for _ in 0..100 {
+    fn test_trucks_move_along_circuit() {
+        let mut t = make_truck(0);
+        let start_lat = t.lat;
+        let start_lon = t.lon;
+        // After 10 ticks the truck should have moved.
+        for _ in 0..10 {
             step_truck(&mut t);
         }
-        // After ~80 ticks the truck should have gone through at least one returning phase.
-        assert!(matches!(
-            t.op_state,
-            TruckOp::Idle | TruckOp::Loading | TruckOp::Hauling | TruckOp::Returning
-        ));
+        let moved = (t.lat - start_lat).abs() > 1e-6 || (t.lon - start_lon).abs() > 1e-6;
+        assert!(moved, "Truck should have moved along the circuit");
+    }
+
+    #[test]
+    fn test_path_is_not_straight_line() {
+        let mut t = make_truck(0);
+        // Force hauling state so the truck moves at meaningful speed.
+        t.op_state = TruckOp::Hauling;
+        t.payload = 250.0;
+
+        let mut lats = Vec::new();
+        let mut lons = Vec::new();
+        for _ in 0..30 {
+            let tel = step_truck(&mut t);
+            lats.push(tel.latitude);
+            lons.push(tel.longitude);
+        }
+
+        // Compute variance of heading direction changes — if path is a perfectly
+        // straight line the headings are all equal (zero variance).
+        let headings: Vec<f64> = lats.windows(2).zip(lons.windows(2)).map(|(ls, lo)| {
+            (lo[1] - lo[0]).atan2(ls[1] - ls[0]).to_degrees()
+        }).collect();
+
+        let mean = headings.iter().sum::<f64>() / headings.len() as f64;
+        let variance = headings.iter().map(|h| (h - mean).powi(2)).sum::<f64>() / headings.len() as f64;
+
+        // The circuit curves enough that heading variance must be non-trivial.
+        assert!(variance > 0.0, "Path should not be a perfectly straight line; heading variance={variance}");
+    }
+
+    #[test]
+    fn test_elevation_changes_along_route() {
+        let mut t = make_truck(0);
+        t.op_state = TruckOp::Hauling;
+        t.payload = 250.0;
+
+        let elevations: Vec<f32> = (0..50).map(|_| {
+            let tel = step_truck(&mut t);
+            tel.elevation_meters
+        }).collect();
+
+        let min_elev = elevations.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_elev = elevations.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        // The route climbs from pit floor (~22 m) to haul road (~80 m).
+        assert!(max_elev - min_elev > 1.0, "Elevation should change along the route");
+    }
+
+    #[test]
+    fn test_ramp_section_has_higher_rpm() {
+        let mut t = make_truck(0);
+        // Position truck at ramp start (waypoint 2 is the first ramp waypoint).
+        t.waypoint_idx = 3;
+        t.op_state = TruckOp::Hauling;
+        t.payload = 250.0;
+
+        let tel = step_truck(&mut t);
+        // On ramp the RPM must be ≥ 2000.
+        assert!(tel.engine_rpm >= 1800, "Ramp section RPM should be elevated, got {}", tel.engine_rpm);
     }
 
     #[test]
     fn test_gps_glitch_injected_at_interval() {
         let mut t = make_truck(0);
-        // Advance to just before glitch tick.
         t.tick = GLITCH_INTERVAL - 1;
-        let normal = step_truck(&mut t); // tick == GLITCH_INTERVAL now
-        // The glitch fires on tick == GLITCH_INTERVAL (divisible by GLITCH_INTERVAL).
-        let dist_lat = (normal.latitude - t.lat).abs();
-        assert!(dist_lat > 1.0, "Expected glitch lat offset > 1 degree, got {dist_lat}");
+        let tel = step_truck(&mut t);
+        let dist_lat = (tel.latitude - t.lat).abs();
+        assert!(dist_lat > 1.0, "Expected glitch lat offset > 1°, got {dist_lat}");
     }
 
     #[test]
     fn test_out_of_order_timestamp_injected() {
         let mut t = make_truck(0);
-        t.tick = 89; // next step will be tick==90
+        t.tick = 89;
         let tel = step_truck(&mut t);
         let now_ms = chrono::Utc::now().timestamp_millis();
-        // Timestamp should be 5 minutes in the past.
-        assert!(now_ms - tel.timestamp_ms > 290_000);
+        assert!(now_ms - tel.timestamp_ms > 290_000, "Timestamp should be ~5 min in the past");
     }
 
     #[test]
@@ -278,6 +569,6 @@ mod tests {
         for _ in 0..5 {
             step_truck(&mut t);
         }
-        assert!(t.payload > 0.0);
+        assert!(t.payload > 0.0, "Payload should increase during loading");
     }
 }

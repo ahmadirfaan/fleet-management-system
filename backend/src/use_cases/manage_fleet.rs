@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::domain::{
     errors::{AppError, DomainError},
-    models::{Fleet, HealthAlert, HistoryPoint},
+    models::{Fleet, HealthAlert, HistoryPage, HistoryPoint},
 };
 use crate::infrastructure::persistence::FleetRepository;
 
@@ -57,6 +57,24 @@ impl ManageFleetUseCase {
     ) -> Result<Vec<HistoryPoint>, AppError> {
         self.repo
             .get_history(truck_id, limit)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::RowNotFound => AppError::Domain(DomainError::UnknownFleet(
+                    truck_id.to_string(),
+                )),
+                other => AppError::Persistence(other),
+            })
+    }
+
+    /// Paginated history for detailed table view.
+    pub async fn get_history_page(
+        &self,
+        truck_id: &str,
+        page: i64,
+        page_size: i64,
+    ) -> Result<HistoryPage, AppError> {
+        self.repo
+            .get_history_page(truck_id, page, page_size)
             .await
             .map_err(|e| match e {
                 sqlx::Error::RowNotFound => AppError::Domain(DomainError::UnknownFleet(

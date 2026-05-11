@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::domain::{
     errors::DomainError,
-    models::{AlertSeverity, AlertType, Fleet, FleetStatus, FleetType, HealthAlert, HistoryPoint, TelemetryReading},
+    models::{AlertSeverity, AlertType, Fleet, FleetStatus, FleetType, HealthAlert, HistoryPage, HistoryPoint, TelemetryReading},
 };
 
 /// Repository: all DB operations for the fleet management domain.
@@ -173,9 +173,11 @@ impl FleetRepository {
                 timestamp,
                 ST_Y(geom) AS latitude,
                 ST_X(geom) AS longitude,
+                elevation_meters,
                 speed_kmh,
                 engine_rpm,
                 fuel_level_percent,
+                payload_weight_tons,
                 operational_state
             FROM telemetry_logs
             WHERE fleet_id = $1
@@ -194,12 +196,82 @@ impl FleetRepository {
                 timestamp: r.get("timestamp"),
                 latitude: r.get::<Option<f64>, _>("latitude").unwrap_or(0.0),
                 longitude: r.get::<Option<f64>, _>("longitude").unwrap_or(0.0),
+                elevation_meters: r.get("elevation_meters"),
                 speed_kmh: r.get("speed_kmh"),
                 engine_rpm: r.get("engine_rpm"),
                 fuel_level_percent: r.get("fuel_level_percent"),
+                payload_weight_tons: r.get("payload_weight_tons"),
                 operational_state: r.get("operational_state"),
             })
             .collect())
+    }
+
+    /// Paginated history: returns one day's worth of telemetry records.
+    /// `page` is 0-indexed. `page_size` is the number of records per page.
+    pub async fn get_history_page(
+        &self,
+        fleet_id_str: &str,
+        page: i64,
+        page_size: i64,
+    ) -> Result<HistoryPage, sqlx::Error> {
+        let fleet_uuid = self.resolve_fleet_uuid(fleet_id_str).await?;
+        let offset = page * page_size;
+
+        // Total count for pagination metadata
+        let count_row = sqlx::query(
+            "SELECT COUNT(*) AS cnt FROM telemetry_logs WHERE fleet_id = $1",
+        )
+        .bind(fleet_uuid)
+        .fetch_one(&self.pool)
+        .await?;
+        let total_count: i64 = count_row.get("cnt");
+
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                timestamp,
+                ST_Y(geom) AS latitude,
+                ST_X(geom) AS longitude,
+                elevation_meters,
+                speed_kmh,
+                engine_rpm,
+                fuel_level_percent,
+                payload_weight_tons,
+                operational_state
+            FROM telemetry_logs
+            WHERE fleet_id = $1
+            ORDER BY timestamp ASC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(fleet_uuid)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let points = rows
+            .into_iter()
+            .map(|r| HistoryPoint {
+                timestamp: r.get("timestamp"),
+                latitude: r.get::<Option<f64>, _>("latitude").unwrap_or(0.0),
+                longitude: r.get::<Option<f64>, _>("longitude").unwrap_or(0.0),
+                elevation_meters: r.get("elevation_meters"),
+                speed_kmh: r.get("speed_kmh"),
+                engine_rpm: r.get("engine_rpm"),
+                fuel_level_percent: r.get("fuel_level_percent"),
+                payload_weight_tons: r.get("payload_weight_tons"),
+                operational_state: r.get("operational_state"),
+            })
+            .collect();
+
+        Ok(HistoryPage {
+            truck_id: fleet_id_str.to_string(),
+            page,
+            page_size,
+            total_count,
+            points,
+        })
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

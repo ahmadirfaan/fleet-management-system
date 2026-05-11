@@ -1,7 +1,7 @@
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap,useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useFleetStore } from "../store/fleetStore";
-import { useState,useEffect } from 'react'; // Tambahkan ini
+import { useState, useEffect } from "react";
 
 // Fix Leaflet default icon paths broken by Vite bundling.
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
@@ -16,7 +16,6 @@ function truckIcon(color: string, heading: number, zoom: number): L.DivIcon {
   const baseSize = 36;
   const scale = Math.pow(1.3, zoom - 12);
   const size = Math.min(Math.max(20, baseSize * scale), 120);
-
 
   const truckSvg = `
     <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" 
@@ -49,24 +48,47 @@ function truckIcon(color: string, heading: number, zoom: number): L.DivIcon {
 
 function ZoomListener({ setZoom }: { setZoom: (z: number) => void }) {
   const map = useMap();
-  
+
   useEffect(() => {
     const onZoom = () => setZoom(map.getZoom());
-    map.on('zoomend', onZoom);
+    map.on("zoomend", onZoom);
     return () => {
-      map.off('zoomend', onZoom);
+      map.off("zoomend", onZoom);
     };
   }, [map, setZoom]);
 
   return null;
 }
+
 /** Re-centers the map on history route when entering history mode. */
 function HistoryFit({ positions }: { positions: [number, number][] }) {
   const map = useMap();
-  if (positions.length > 1) {
-    map.fitBounds(positions);
-  }
+  useEffect(() => {
+    if (positions.length > 1) {
+      map.fitBounds(positions);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions.length]);
   return null;
+}
+
+// Distinct trail colours per truck so overlapping paths are easy to read.
+const TRAIL_COLORS = [
+  "#58a6ff", // blue   — HT-001
+  "#3fb950", // green  — HT-002
+  "#d29922", // yellow — HT-003
+  "#f78166", // orange — HT-004
+  "#bc8cff", // purple — HT-005
+];
+
+function trailColor(fleetId: string, index: number): string {
+  // Try to derive colour from truck index (HT-001 → 0, HT-002 → 1, …)
+  const match = fleetId.match(/(\d+)$/);
+  if (match) {
+    const n = parseInt(match[1], 10) - 1;
+    return TRAIL_COLORS[n % TRAIL_COLORS.length];
+  }
+  return TRAIL_COLORS[index % TRAIL_COLORS.length];
 }
 
 export default function FleetMap() {
@@ -76,8 +98,12 @@ export default function FleetMap() {
   const isLiveMode = useFleetStore((s) => s.isLiveMode);
   const historyPoints = useFleetStore((s) => s.historyPoints);
   const historyScrubIndex = useFleetStore((s) => s.historyScrubIndex);
+
   const historyPositions: [number, number][] = historyPoints.map((p) => [p.latitude, p.longitude]);
   const scrubPoint = historyPoints[historyScrubIndex];
+
+  // Positions up to the current scrub index (so polyline grows as user scrubs).
+  const scrubPositions: [number, number][] = historyPositions.slice(0, historyScrubIndex + 1);
 
   return (
     <MapContainer
@@ -92,33 +118,54 @@ export default function FleetMap() {
         attribution='&copy; <a href="https://carto.com/">CARTO</a>'
       />
 
-      {/* Live mode markers */}
+      {/* ── Live mode: per-truck trail polylines + current position markers ── */}
       {isLiveMode &&
-        Object.values(trucks).map(({ telemetry, isStale }) => {
-          const isCritical =
-            telemetry.speed_kmh > 60 || telemetry.engine_rpm > 2500;
+        Object.values(trucks).map(({ telemetry, isStale, trail }, idx) => {
+          const isCritical = telemetry.speed_kmh > 60 || telemetry.engine_rpm > 2500;
           const color = isStale ? "#8b949e" : isCritical ? "#f85149" : "#3fb950";
+          const trailCol = trailColor(telemetry.fleet_id, idx);
+
+          const trailPositions: [number, number][] = trail.map((p) => [p.lat, p.lon]);
+
           return (
-            <Marker
-              key={telemetry.fleet_id}
-              position={[telemetry.latitude, telemetry.longitude]}
-              icon={truckIcon(color, telemetry.heading_degrees, currentZoom)}
-              eventHandlers={{ click: () => selectTruck(telemetry.fleet_id) }}
-            >
-              <Popup>
-                <strong>{telemetry.fleet_id}</strong>
-                <br />
-                {telemetry.operational_state} | {telemetry.speed_kmh.toFixed(1)} km/h
-              </Popup>
-            </Marker>
+            <div key={telemetry.fleet_id}>
+              {/* Live trail polyline — faded colour of the truck */}
+              {trailPositions.length > 1 && (
+                <Polyline
+                  positions={trailPositions}
+                  color={trailCol}
+                  weight={2}
+                  opacity={0.55}
+                  dashArray="4 3"
+                />
+              )}
+
+              {/* Current position marker */}
+              <Marker
+                position={[telemetry.latitude, telemetry.longitude]}
+                icon={truckIcon(color, telemetry.heading_degrees, currentZoom)}
+                eventHandlers={{ click: () => selectTruck(telemetry.fleet_id) }}
+              >
+                <Popup>
+                  <strong>{telemetry.fleet_id}</strong>
+                  <br />
+                  {telemetry.operational_state} | {telemetry.speed_kmh.toFixed(1)} km/h
+                  <br />
+                  RPM: {telemetry.engine_rpm} | Elev: {telemetry.elevation_meters.toFixed(0)} m
+                </Popup>
+              </Marker>
+            </div>
           );
         })}
 
-      {/* History mode polyline + scrub marker */}
+      {/* ── History mode: full route polyline + scrub marker ── */}
       {!isLiveMode && historyPositions.length > 0 && (
         <>
           <HistoryFit positions={historyPositions} />
-          <Polyline positions={historyPositions} color="#d29922" weight={2} />
+          {/* Full ghost route */}
+          <Polyline positions={historyPositions} color="#30363d" weight={2} opacity={0.5} />
+          {/* Elapsed path up to scrub position */}
+          <Polyline positions={scrubPositions} color="#d29922" weight={3} />
           {scrubPoint && (
             <Marker
               position={[scrubPoint.latitude, scrubPoint.longitude]}
@@ -128,6 +175,9 @@ export default function FleetMap() {
                 {new Date(scrubPoint.timestamp).toLocaleTimeString()}
                 <br />
                 {scrubPoint.speed_kmh?.toFixed(1)} km/h | {scrubPoint.operational_state}
+                {scrubPoint.elevation_meters != null && (
+                  <><br />Elev: {scrubPoint.elevation_meters.toFixed(0)} m</>
+                )}
               </Popup>
             </Marker>
           )}

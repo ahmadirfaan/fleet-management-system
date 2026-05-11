@@ -114,10 +114,23 @@ pub struct HistoryPoint {
     pub timestamp: DateTime<Utc>,
     pub latitude: f64,
     pub longitude: f64,
+    pub elevation_meters: Option<f64>,
     pub speed_kmh: Option<f64>,
     pub engine_rpm: Option<i32>,
     pub fuel_level_percent: Option<f64>,
+    pub payload_weight_tons: Option<f64>,
     pub operational_state: Option<String>,
+}
+
+// ── Paginated history response ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryPage {
+    pub truck_id: String,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_count: i64,
+    pub points: Vec<HistoryPoint>,
 }
 
 // ── SSE event (broadcast to frontend) ────────────────────────────────────────

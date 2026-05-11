@@ -1,7 +1,12 @@
 import { create } from "zustand";
-import type { TelemetryEvent, Alert, HistoryPoint } from "../types";
+import type { TelemetryEvent, Alert, HistoryPoint, LiveTrailPoint } from "../types";
 
 const API = import.meta.env.VITE_API_BASE_URL ?? "";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/** Maximum number of live trail points kept per truck (ring buffer). */
+const LIVE_TRAIL_MAX = 200;
 
 // ── Truck live state ──────────────────────────────────────────────────────────
 
@@ -9,6 +14,8 @@ export interface TruckLiveState {
   telemetry: TelemetryEvent;
   lastSeen: number; // Date.now()
   isStale: boolean; // no data >30s
+  /** Chronological ring-buffer of recent positions for the live polyline. */
+  trail: LiveTrailPoint[];
 }
 
 interface FleetStore {
@@ -50,12 +57,24 @@ export const useFleetStore = create<FleetStore>((set, get) => ({
 
     set((state) => {
       const existing = state.trucks[event.fleet_id];
+
+      // Build updated trail: keep prior trail, append new point (unless GPS glitch —
+      // we don't want the 150 km jump in the visual trail).
+      const prevTrail: LiveTrailPoint[] = existing?.trail ?? [];
+      const newTrail: LiveTrailPoint[] = isGpsGlitch
+        ? prevTrail
+        : [
+            ...prevTrail.slice(-(LIVE_TRAIL_MAX - 1)),
+            { lat: event.latitude, lon: event.longitude, timestamp: Date.now() },
+          ];
+
       const updated: TruckLiveState = {
         telemetry: isGpsGlitch && existing
           ? { ...existing.telemetry, is_anomaly: true, anomaly_type: "GPS_GLITCH" }
           : event,
         lastSeen: Date.now(),
         isStale: false,
+        trail: newTrail,
       };
       return { trucks: { ...state.trucks, [event.fleet_id]: updated } };
     });

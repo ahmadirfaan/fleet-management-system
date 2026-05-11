@@ -36,8 +36,26 @@ export interface HistoryPoint {
   timestamp: string;
   latitude: number;
   longitude: number;
+  elevation_meters: number | null;
   speed_kmh: number | null;
   engine_rpm: number | null;
   fuel_level_percent: number | null;
+  payload_weight_tons: number | null;
   operational_state: string | null;
 }
+
+export interface HistoryPage {
+  truck_id: string;
+  page: number;
+  page_size: number;
+  total_count: number;
+  points: HistoryPoint[];
+}
+
+/** Compact position record stored in the live trail ring buffer. */
+export interface LiveTrailPoint {
+  lat: number;
+  lon: number;
+  timestamp: number; // Date.now()
+}
+

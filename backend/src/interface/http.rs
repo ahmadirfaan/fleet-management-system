@@ -40,6 +40,7 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/api/alerts", get(list_alerts))
         .route("/api/alerts/:id/acknowledge", put(acknowledge_alert))
         .route("/api/history", get(history))
+        .route("/api/history/page", get(history_page))
         .with_state(Arc::new(state))
 }
 
@@ -111,4 +112,29 @@ async fn history(
         .get_history(&params.truck_id, params.limit)
         .await?;
     Ok(Json(points))
+}
+
+/// GET /api/history/page?truck_id=HT-001&page=0&page_size=100
+#[derive(Deserialize)]
+struct HistoryPageParams {
+    truck_id: String,
+    #[serde(default)]
+    page: i64,
+    #[serde(default = "default_page_size")]
+    page_size: i64,
+}
+
+fn default_page_size() -> i64 {
+    100
+}
+
+async fn history_page(
+    State(state): State<Arc<HttpState>>,
+    Query(params): Query<HistoryPageParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let page = state
+        .manage_fleet
+        .get_history_page(&params.truck_id, params.page, params.page_size)
+        .await?;
+    Ok(Json(page))
 }

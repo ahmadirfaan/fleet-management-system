@@ -1,9 +1,13 @@
-import { useState } from "react"; // Added for state management
+import { useState } from "react";
 import { useFleetStore } from "../store/fleetStore";
-import { AlertTriangle, CheckCircle2, Truck, ChevronLeft, ChevronRight } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Truck, ChevronLeft, ChevronRight, TableProperties } from "lucide-react";
 
-export default function Sidebar() {
-  const [isCollapsed, setIsCollapsed] = useState(false); // State to track visibility
+interface SidebarProps {
+  onOpenHistoryTable: () => void;
+}
+
+export default function Sidebar({ onOpenHistoryTable }: SidebarProps) {
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const trucks = useFleetStore((s) => s.trucks);
   const alerts = useFleetStore((s) => s.alerts);
   const acknowledgeAlert = useFleetStore((s) => s.acknowledgeAlert);
@@ -141,6 +145,17 @@ export default function Sidebar() {
             </div>
           </section>
         )}
+
+        {/* Fleet History table button */}
+        <section className="px-4 py-3 border-t border-fleet-border mt-auto">
+          <button
+            onClick={onOpenHistoryTable}
+            className="w-full flex items-center gap-2 text-xs text-fleet-muted hover:text-fleet-text hover:bg-fleet-border rounded px-2 py-1.5 transition-colors"
+          >
+            <TableProperties size={14} />
+            Fleet History Table
+          </button>
+        </section>
       </div>
 
       {/* Icon-only view when collapsed */}
