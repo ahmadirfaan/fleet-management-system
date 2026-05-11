@@ -36,10 +36,11 @@ impl FleetRepository {
             r#"
             INSERT INTO telemetry_logs
                 (fleet_id, timestamp, geom, elevation_meters, speed_kmh, engine_rpm,
-                 fuel_level_percent, payload_weight_tons, heading_degrees, operational_state)
+                 fuel_level_percent, payload_weight_tons, heading_degrees, operational_state,
+                 is_anomaly)
             VALUES
                 ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326),
-                 $5, $6, $7, $8, $9, $10, $11)
+                 $5, $6, $7, $8, $9, $10, $11, $12)
             "#,
         )
         .bind(fleet_uuid)
@@ -53,6 +54,7 @@ impl FleetRepository {
         .bind(tel.payload_weight_tons as f64)
         .bind(tel.heading_degrees)
         .bind(&tel.operational_state)
+        .bind(tel.is_anomaly)
         .execute(&self.pool)
         .await?;
 
@@ -178,7 +180,8 @@ impl FleetRepository {
                 engine_rpm,
                 fuel_level_percent,
                 payload_weight_tons,
-                operational_state
+                operational_state,
+                is_anomaly
             FROM telemetry_logs
             WHERE fleet_id = $1
             ORDER BY timestamp DESC
@@ -202,6 +205,7 @@ impl FleetRepository {
                 fuel_level_percent: r.get("fuel_level_percent"),
                 payload_weight_tons: r.get("payload_weight_tons"),
                 operational_state: r.get("operational_state"),
+                is_anomaly: r.get::<Option<bool>, _>("is_anomaly").unwrap_or(false),
             })
             .collect())
     }
@@ -237,7 +241,8 @@ impl FleetRepository {
                 engine_rpm,
                 fuel_level_percent,
                 payload_weight_tons,
-                operational_state
+                operational_state,
+                is_anomaly
             FROM telemetry_logs
             WHERE fleet_id = $1
             ORDER BY timestamp ASC
@@ -262,6 +267,7 @@ impl FleetRepository {
                 fuel_level_percent: r.get("fuel_level_percent"),
                 payload_weight_tons: r.get("payload_weight_tons"),
                 operational_state: r.get("operational_state"),
+                is_anomaly: r.get::<Option<bool>, _>("is_anomaly").unwrap_or(false),
             })
             .collect();
 

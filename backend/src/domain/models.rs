@@ -46,6 +46,10 @@ pub struct TelemetryReading {
     pub heading_degrees: i32,
     pub operational_state: String,
     pub excavator_data: Option<ExcavatorReading>,
+    /// True when this reading was flagged as a GPS glitch or other anomaly at ingest time.
+    /// The row is kept for audit purposes; consumers should exclude it from polyline rendering.
+    #[serde(default)]
+    pub is_anomaly: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +124,8 @@ pub struct HistoryPoint {
     pub fuel_level_percent: Option<f64>,
     pub payload_weight_tons: Option<f64>,
     pub operational_state: Option<String>,
+    /// Mirrors the DB `is_anomaly` flag — true for GPS glitch rows.
+    pub is_anomaly: bool,
 }
 
 // ── Paginated history response ────────────────────────────────────────────────

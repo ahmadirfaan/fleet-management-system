@@ -84,7 +84,9 @@ impl TrackVehicleUseCase {
                 warn!(
                     "[{fleet_id}] GPS glitch (dist={dist:.1}km, implied={implied_speed:.0}km/h)"
                 );
-                self.repo.insert_telemetry(&tel).await?;
+                // Mark the row as anomalous before persisting for audit purposes.
+                let glitch_tel = TelemetryReading { is_anomaly: true, ..tel.clone() };
+                self.repo.insert_telemetry(&glitch_tel).await?;
                 self.repo
                     .insert_alert(fleet_id, AlertType::GpsGlitch, AlertSeverity::Critical, &tel)
                     .await?;

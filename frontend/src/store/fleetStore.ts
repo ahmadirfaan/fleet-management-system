@@ -101,7 +101,8 @@ export const useFleetStore = create<FleetStore>((set, get) => ({
     const points: HistoryPoint[] = await res.json();
     // API returns latest-first; reverse to chronological so the polyline
     // draws oldest→newest (left→right on the scrubber).
-    const chronological = [...points].reverse();
+    // Filter out GPS glitch rows (is_anomaly=true) so the polyline stays clean.
+    const chronological = [...points].reverse().filter((p) => !p.is_anomaly);
     set({
       isLiveMode: false,
       historyTruckId: truckId,

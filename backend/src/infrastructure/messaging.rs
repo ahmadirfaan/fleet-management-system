@@ -78,5 +78,6 @@ fn proto_to_domain(p: ProtoTelemetry) -> TelemetryReading {
             bucket_angle_degrees: ex.bucket_angle_degrees,
             swing_speed_rpm: ex.swing_speed_rpm,
         }),
+        is_anomaly: false, // ingest always starts as non-anomalous; use case may override
     }
 }

@@ -249,13 +249,16 @@ function TruckDetail({ truckId, onBack }: TruckDetailProps) {
                 <th className="text-right py-2 px-2 font-semibold">Elev (m)</th>
                 <th className="text-right py-2 px-2 font-semibold">Fuel %</th>
                 <th className="text-right py-2 px-2 font-semibold">Payload (t)</th>
+                <th className="text-center py-2 px-2 font-semibold">Flag</th>
               </tr>
             </thead>
             <tbody>
               {histPage.points.map((pt, i) => (
                 <tr
                   key={i}
-                  className="border-b border-fleet-border/50 hover:bg-fleet-border/20"
+                  className={`border-b border-fleet-border/50 hover:bg-fleet-border/20 ${
+                    pt.is_anomaly ? "bg-red-900/10" : ""
+                  }`}
                 >
                   <td className="py-1.5 px-2 font-mono text-[10px] text-fleet-muted whitespace-nowrap">
                     {new Date(pt.timestamp).toLocaleString()}
@@ -292,11 +295,18 @@ function TruckDetail({ truckId, onBack }: TruckDetailProps) {
                   <td className="py-1.5 px-2 text-right font-mono">
                     {pt.payload_weight_tons != null ? pt.payload_weight_tons.toFixed(0) : "—"}
                   </td>
+                  <td className="py-1.5 px-2 text-center">
+                    {pt.is_anomaly && (
+                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-red-500/20 text-red-400">
+                        GPS GLITCH
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {histPage.points.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-fleet-muted">
+                  <td colSpan={8} className="py-6 text-center text-fleet-muted">
                     No records found.
                   </td>
                 </tr>

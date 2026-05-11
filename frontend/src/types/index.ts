@@ -42,6 +42,8 @@ export interface HistoryPoint {
   fuel_level_percent: number | null;
   payload_weight_tons: number | null;
   operational_state: string | null;
+  /** True for GPS glitch rows — exclude from polyline, but show (flagged) in tables. */
+  is_anomaly: boolean;
 }
 
 export interface HistoryPage {

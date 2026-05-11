@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS telemetry_logs (
     fuel_level_percent  FLOAT,
     payload_weight_tons FLOAT,
     heading_degrees     INTEGER,
-    operational_state   VARCHAR(20)  CHECK (operational_state IN ('LOADING','HAULING','DUMPING','IDLE','RETURNING'))
+    operational_state   VARCHAR(20)  CHECK (operational_state IN ('LOADING','HAULING','DUMPING','IDLE','RETURNING')),
+    is_anomaly          BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_fleet_time
