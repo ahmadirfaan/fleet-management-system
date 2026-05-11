@@ -1,6 +1,6 @@
 # ROLE & CONTEXT
 You are an expert Senior Full Stack Engineer specializing in Rust, React, and IoT systems.
-Your task is to build the "SYNPS MINI FLEET", a real-time Fleet Management System for 5 mining trucks (for simulation), designed to be scalable.
+Your task is to build the "FLEET MANAGEMENT SYSTEM", a real-time Fleet Management System for 5 mining trucks (for simulation), designed to be scalable.
 
 We must optimize for a reliable single-command startup (`docker-compose up`) with ZERO manual configuration. The reviewer must be able to run this effortlessly.
 

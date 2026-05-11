@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package minifleet;
+
+message Telemetry {
+  string fleet_id          = 1;
+  int64  timestamp_ms      = 2;
+  double latitude          = 3;
+  double longitude         = 4;
+  float  elevation_meters  = 5;
+  float  speed_kmh         = 6;
+  int32  engine_rpm        = 7;
+  float  fuel_level_percent = 8;
+  float  payload_weight_tons = 9;
+  int32  heading_degrees   = 10;
+  string operational_state = 11;
+
+  ExcavatorData excavator_data = 12;
+}
+
+message ExcavatorData {
+  float boom_angle_degrees   = 1;
+  float arm_angle_degrees    = 2;
+  float bucket_angle_degrees = 3;
+  float swing_speed_rpm      = 4;
+}
