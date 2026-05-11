@@ -3,6 +3,45 @@ import type { TelemetryEvent, Alert, HistoryPoint, LiveTrailPoint } from "../typ
 
 const API = import.meta.env.VITE_API_BASE_URL ?? "";
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Great-circle distance in km between two lat/lon points. */
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+/**
+ * Remove points that imply an impossible speed jump from the previous point
+ * (> 200 km/h implied by distance/time).  This cleans up GPS glitch rows that
+ * pre-date the is_anomaly DB column, as well as any that slip through.
+ */
+function filterGlitchPoints(points: HistoryPoint[]): HistoryPoint[] {
+  const out: HistoryPoint[] = [];
+  for (const pt of points) {
+    if (out.length === 0) {
+      out.push(pt);
+      continue;
+    }
+    const prev = out[out.length - 1];
+    const distKm = haversineKm(prev.latitude, prev.longitude, pt.latitude, pt.longitude);
+    const dtH = (new Date(pt.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 3_600_000;
+    const impliedSpeed = dtH > 0 ? distKm / dtH : Infinity;
+    if (impliedSpeed <= 200) {
+      out.push(pt);
+    }
+    // else: silently drop the glitch point — it won't appear in the polyline
+  }
+  return out;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /** Maximum number of live trail points kept per truck (ring buffer). */
@@ -101,8 +140,13 @@ export const useFleetStore = create<FleetStore>((set, get) => ({
     const points: HistoryPoint[] = await res.json();
     // API returns latest-first; reverse to chronological so the polyline
     // draws oldest→newest (left→right on the scrubber).
-    // Filter out GPS glitch rows (is_anomaly=true) so the polyline stays clean.
-    const chronological = [...points].reverse().filter((p) => !p.is_anomaly);
+    // Two-pass clean:
+    //   1. Drop rows explicitly flagged is_anomaly=true (new data, post-migration).
+    //   2. Drop any remaining points that imply >200 km/h speed jump (old data,
+    //      pre-migration, or any that slipped through the DB flag).
+    const chronological = filterGlitchPoints(
+      [...points].reverse().filter((p) => !p.is_anomaly)
+    );
     set({
       isLiveMode: false,
       historyTruckId: truckId,

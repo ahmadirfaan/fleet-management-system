@@ -75,6 +75,19 @@ export default function Sidebar({ onOpenHistoryTable }: SidebarProps) {
           </div>
         </section>
 
+
+        {/* Fleet History table button */}
+        <section className="px-4 py-3 border-t border-fleet-border mt-auto">
+          <button
+            onClick={onOpenHistoryTable}
+            className="w-full flex items-center gap-2 text-xs text-fleet-muted hover:text-fleet-text hover:bg-fleet-border rounded px-2 py-1.5 transition-colors"
+          >
+            <TableProperties size={14} />
+            Fleet History Table
+          </button>
+        </section>
+
+
         {/* Unacknowledged alerts */}
         <section className="px-4 py-3 border-b border-fleet-border flex-1">
           <h2 className="text-xs font-semibold uppercase text-fleet-muted mb-2 flex items-center gap-1">
@@ -145,17 +158,6 @@ export default function Sidebar({ onOpenHistoryTable }: SidebarProps) {
             </div>
           </section>
         )}
-
-        {/* Fleet History table button */}
-        <section className="px-4 py-3 border-t border-fleet-border mt-auto">
-          <button
-            onClick={onOpenHistoryTable}
-            className="w-full flex items-center gap-2 text-xs text-fleet-muted hover:text-fleet-text hover:bg-fleet-border rounded px-2 py-1.5 transition-colors"
-          >
-            <TableProperties size={14} />
-            Fleet History Table
-          </button>
-        </section>
       </div>
 
       {/* Icon-only view when collapsed */}

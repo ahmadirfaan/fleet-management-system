@@ -243,6 +243,8 @@ function TruckDetail({ truckId, onBack }: TruckDetailProps) {
             <thead>
               <tr className="text-fleet-muted uppercase text-[10px] border-b border-fleet-border sticky top-0 bg-fleet-panel">
                 <th className="text-left py-2 px-2 font-semibold">Timestamp</th>
+                <th className="text-right py-2 px-2 font-semibold">Lat</th>
+                <th className="text-right py-2 px-2 font-semibold">Lon</th>
                 <th className="text-left py-2 px-2 font-semibold">State</th>
                 <th className="text-right py-2 px-2 font-semibold">Speed</th>
                 <th className="text-right py-2 px-2 font-semibold">RPM</th>
@@ -262,6 +264,12 @@ function TruckDetail({ truckId, onBack }: TruckDetailProps) {
                 >
                   <td className="py-1.5 px-2 font-mono text-[10px] text-fleet-muted whitespace-nowrap">
                     {new Date(pt.timestamp).toLocaleString()}
+                  </td>
+                  <td className="py-1.5 px-2 text-right font-mono text-[10px]">
+                    {pt.latitude.toFixed(5)}
+                  </td>
+                  <td className="py-1.5 px-2 text-right font-mono text-[10px]">
+                    {pt.longitude.toFixed(5)}
                   </td>
                   <td className="py-1.5 px-2">
                     <span
@@ -306,7 +314,7 @@ function TruckDetail({ truckId, onBack }: TruckDetailProps) {
               ))}
               {histPage.points.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-6 text-center text-fleet-muted">
+                  <td colSpan={10} className="py-6 text-center text-fleet-muted">
                     No records found.
                   </td>
                 </tr>
