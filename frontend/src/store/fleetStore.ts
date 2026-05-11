@@ -94,13 +94,19 @@ export const useFleetStore = create<FleetStore>((set, get) => ({
   selectTruck: (id) => set({ selectedTruckId: id }),
 
   enterHistoryMode: async (truckId) => {
-    const res = await fetch(`${API}/api/history?truck_id=${truckId}&limit=500`);
+    // Fetch enough points to cover multiple full circuit laps.
+    // One full circuit at ~10 m/s average takes ~300–400 seconds.
+    // 2000 points = ~33 minutes of data = at least 5 full laps visible.
+    const res = await fetch(`${API}/api/history?truck_id=${truckId}&limit=2000`);
     const points: HistoryPoint[] = await res.json();
+    // API returns latest-first; reverse to chronological so the polyline
+    // draws oldest→newest (left→right on the scrubber).
+    const chronological = [...points].reverse();
     set({
       isLiveMode: false,
       historyTruckId: truckId,
-      historyPoints: points.reverse(), // chronological
-      historyScrubIndex: points.length - 1,
+      historyPoints: chronological,
+      historyScrubIndex: chronological.length - 1,
     });
   },
 

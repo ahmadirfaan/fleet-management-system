@@ -107,8 +107,8 @@ export default function FleetMap() {
 
   return (
     <MapContainer
-      center={[-0.51, 116.83]}
-      zoom={12}
+      center={[-0.495, 116.865]}
+      zoom={11}
       style={{ height: "100%", width: "100%", background: "#0d1117" }}
       zoomControl={false}
     >

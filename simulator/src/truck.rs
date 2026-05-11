@@ -41,33 +41,34 @@ impl Waypoint {
 // → Crusher → Return Road → Back to Loading Zone.
 // Offsets are in degrees (~111 km/deg lat, ~111*cos(lat) km/deg lon ≈ 111 km/deg here).
 //
-// Scale: 0.001° ≈ 111 m — realistic for a mid-size open-pit mine.
+// Scale: 0.01° ≈ 1.1 km — each segment is clearly visible on the map at zoom 11-12.
+// Total loop extent: ~2.5° × 2.5° ≈ 25 km, realistic for a large open-pit mine.
 
 const CIRCUIT: [Waypoint; 16] = [
     // Loading zone — pit floor (south-west)
-    Waypoint::new(BASE_LAT - 0.010, BASE_LON - 0.008),
-    Waypoint::new(BASE_LAT - 0.008, BASE_LON - 0.006),
-    // Ramp climb — switchback 1
-    Waypoint::new(BASE_LAT - 0.006, BASE_LON - 0.009),
-    Waypoint::new(BASE_LAT - 0.004, BASE_LON - 0.005),
-    // Ramp top — transition to haul road
-    Waypoint::new(BASE_LAT - 0.002, BASE_LON - 0.003),
-    // Haul road — sweeping curve north-east
-    Waypoint::new(BASE_LAT + 0.002, BASE_LON + 0.002),
-    Waypoint::new(BASE_LAT + 0.006, BASE_LON + 0.006),
-    Waypoint::new(BASE_LAT + 0.010, BASE_LON + 0.009),
-    // Crusher area (north-east corner)
-    Waypoint::new(BASE_LAT + 0.013, BASE_LON + 0.012),
-    Waypoint::new(BASE_LAT + 0.012, BASE_LON + 0.015),
-    // Return road — arcing south
-    Waypoint::new(BASE_LAT + 0.008, BASE_LON + 0.013),
-    Waypoint::new(BASE_LAT + 0.004, BASE_LON + 0.010),
-    // South-east curve before descent
-    Waypoint::new(BASE_LAT + 0.001, BASE_LON + 0.006),
-    Waypoint::new(BASE_LAT - 0.003, BASE_LON + 0.002),
-    // Descent ramp back to pit floor
-    Waypoint::new(BASE_LAT - 0.007, BASE_LON - 0.003),
-    Waypoint::new(BASE_LAT - 0.010, BASE_LON - 0.006),
+    Waypoint::new(BASE_LAT - 0.100, BASE_LON - 0.080),
+    Waypoint::new(BASE_LAT - 0.080, BASE_LON - 0.060),
+    // Ramp climb — switchback turns west then east (visible as a zigzag)
+    Waypoint::new(BASE_LAT - 0.060, BASE_LON - 0.090),
+    Waypoint::new(BASE_LAT - 0.040, BASE_LON - 0.050),
+    // Ramp top — transition to haul road (heading changes sharply)
+    Waypoint::new(BASE_LAT - 0.020, BASE_LON - 0.030),
+    // Haul road — wide sweeping arc north-east
+    Waypoint::new(BASE_LAT + 0.020, BASE_LON + 0.020),
+    Waypoint::new(BASE_LAT + 0.060, BASE_LON + 0.060),
+    Waypoint::new(BASE_LAT + 0.100, BASE_LON + 0.090),
+    // Crusher area — north-east corner with dog-leg turn
+    Waypoint::new(BASE_LAT + 0.130, BASE_LON + 0.120),
+    Waypoint::new(BASE_LAT + 0.120, BASE_LON + 0.150),
+    // Return road — arcing south-west (different path from haul road)
+    Waypoint::new(BASE_LAT + 0.080, BASE_LON + 0.130),
+    Waypoint::new(BASE_LAT + 0.040, BASE_LON + 0.100),
+    // South-east curve — bends back west
+    Waypoint::new(BASE_LAT + 0.010, BASE_LON + 0.060),
+    Waypoint::new(BASE_LAT - 0.030, BASE_LON + 0.020),
+    // Descent ramp — switchback back to pit floor
+    Waypoint::new(BASE_LAT - 0.070, BASE_LON - 0.030),
+    Waypoint::new(BASE_LAT - 0.100, BASE_LON - 0.060),
 ];
 
 /// Segment index ranges that correspond to each operational state.
@@ -325,37 +326,42 @@ fn step_truck(t: &mut Truck) -> Telemetry {
     //
     // We advance `route_progress` by a distance proportional to speed.
     // When progress >= 1.0 the truck has reached the next waypoint.
+    //
+    // Index convention: `waypoint_idx` is the *next* waypoint (destination).
+    // The *current* waypoint (origin) is `(waypoint_idx + CIRCUIT.len() - 1) % CIRCUIT.len()`.
+    // This avoids the `saturating_sub(1)` bug where idx=0 gives cur == next.
+    let n = CIRCUIT.len();
+    let cur_idx = (t.waypoint_idx + n - 1) % n;
+    let next_idx = t.waypoint_idx % n;
+
     let speed_ms = (t.speed as f64) / 3.6; // km/h → m/s
-    // 1 tick = 1 second; distance per waypoint segment ≈ 150 m (rough mine scale)
-    let segment_len_m = segment_length_m(
-        CIRCUIT[t.waypoint_idx.saturating_sub(1) % CIRCUIT.len()],
-        CIRCUIT[t.waypoint_idx % CIRCUIT.len()],
-    );
-    let segment_len_m = segment_len_m.max(50.0); // guard against zero
+    let segment_len_m = segment_length_m(CIRCUIT[cur_idx], CIRCUIT[next_idx]).max(50.0);
     t.route_progress += speed_ms / segment_len_m;
 
     // Advance waypoints when progress passes 1.0
     while t.route_progress >= 1.0 {
         t.route_progress -= 1.0;
-        t.waypoint_idx = (t.waypoint_idx + 1) % CIRCUIT.len();
+        t.waypoint_idx = (t.waypoint_idx + 1) % n;
     }
 
-    // Interpolate position between current and next waypoint
-    let cur_wp = CIRCUIT[t.waypoint_idx.saturating_sub(1) % CIRCUIT.len()];
-    let next_wp = CIRCUIT[t.waypoint_idx % CIRCUIT.len()];
+    // Re-read indices after possible advance
+    let cur_idx = (t.waypoint_idx + n - 1) % n;
+    let next_idx = t.waypoint_idx % n;
     let alpha = t.route_progress.clamp(0.0, 1.0);
 
-    t.lat = lerp(cur_wp.lat, next_wp.lat, alpha);
-    t.lon = lerp(cur_wp.lon, next_wp.lon, alpha);
+    t.lat = lerp(CIRCUIT[cur_idx].lat, CIRCUIT[next_idx].lat, alpha);
+    t.lon = lerp(CIRCUIT[cur_idx].lon, CIRCUIT[next_idx].lon, alpha);
 
-    // Heading: true bearing from current to next waypoint + small jitter
-    let base_heading = bearing_deg(cur_wp, next_wp);
+    // Heading: true bearing from cur to next + small jitter
+    let base_heading = bearing_deg(CIRCUIT[cur_idx], CIRCUIT[next_idx]);
     t.heading = (base_heading + rng.gen_range(-5..5_i32)).rem_euclid(360);
 
     // Elevation: interpolate along profile + small noise
-    let cur_elev = ELEVATION_PROFILE[t.waypoint_idx.saturating_sub(1) % CIRCUIT.len()];
-    let next_elev = ELEVATION_PROFILE[t.waypoint_idx % CIRCUIT.len()];
-    t.elevation = lerp_f32(cur_elev, next_elev, alpha as f32) + rng.gen_range(-2.0..2.0_f32);
+    t.elevation = lerp_f32(
+        ELEVATION_PROFILE[cur_idx],
+        ELEVATION_PROFILE[next_idx],
+        alpha as f32,
+    ) + rng.gen_range(-2.0..2.0_f32);
 
     // Consume fuel (~0.008%/s idle, 0.03%/s loaded hauling)
     let fuel_rate = match t.op_state {
